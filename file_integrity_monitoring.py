@@ -5,9 +5,30 @@ import time
 import threading
 from plyer import notification
 
+print(
+"""
+ __    __                                          __                      ______  _______    ______  
+|  \  |  \                                        |  \                    |      \|       \  /      \ 
+| $$  | $$ __    __   ______    ______    ______   \$$  ______   _______   \$$$$$$| $$$$$$$\|  $$$$$$\
+| $$__| $$|  \  |  \ /      \  /      \  /      \ |  \ /      \ |       \   | $$  | $$  | $$| $$___\$$
+| $$    $$| $$  | $$|  $$$$$$\|  $$$$$$\|  $$$$$$\| $$|  $$$$$$\| $$$$$$$\  | $$  | $$  | $$ \$$    \ 
+| $$$$$$$$| $$  | $$| $$  | $$| $$    $$| $$   \$$| $$| $$  | $$| $$  | $$  | $$  | $$  | $$ _\$$$$$$\
+| $$  | $$| $$__/ $$| $$__/ $$| $$$$$$$$| $$      | $$| $$__/ $$| $$  | $$ _| $$_ | $$__/ $$|  \__| $$
+| $$  | $$ \$$    $$| $$    $$ \$$     \| $$      | $$ \$$    $$| $$  | $$|   $$ \| $$    $$ \$$    $$
+ \$$   \$$ _\$$$$$$$| $$$$$$$   \$$$$$$$ \$$       \$$  \$$$$$$  \$$   \$$ \$$$$$$ \$$$$$$$   \$$$$$$ 
+          |  \__| $$| $$                                                                              
+           \$$    $$| $$                                                                              
+            \$$$$$$  \$$                                                                              
+
+===================================================> File Intergrity Monitoring
+Made by: Harsh Raj Singhania 
+Github: https://github.com/HarshRajSinghania
+"""
+)
+
 # Configuration
-MONITORED_PATHS = ["/etc", "/bin", "/sbin", "/usr/bin", "/usr/sbin", "/boot", "/tmp", "/var", "/var", "/var", "/root", "/srv"]  # Replace with actual paths
-EXCLUDE_FILES = [".DS_Store", "Thumbs.db"]  # Add exclusions
+MONITORED_PATHS = ["/etc", "/bin", "/sbin", "/usr/bin", "/usr/sbin", "/boot", "/tmp", "/root", "/srv"]  # Replace with actual paths
+EXCLUDE_FILES = [".DS_Store", "Thumbs.db", "/root/.dbus/session-bus/7817bd73d9b94d65a33bb5a802eee272-0", "/etc/mtab"]  # Add exclusions
 HASH_ALGORITHM = "sha256"  # Options: md5, sha1, sha256, sha512
 BASELINE_FILE = "fim_baseline.json"
 LOG_FILE = "fim_notifications.log"
@@ -130,3 +151,4 @@ if __name__ == "__main__":
             time.sleep(1)
     except KeyboardInterrupt:
         print("\n[INFO] Monitoring stopped.")
+
