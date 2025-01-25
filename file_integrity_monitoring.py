@@ -6,7 +6,7 @@ import threading
 from plyer import notification
 
 # Configuration
-MONITORED_PATHS = ["/path/to/monitor"]  # Replace with actual paths
+MONITORED_PATHS = ["/etc", "/bin", "/sbin", "/usr/bin", "/usr/sbin", "/boot", "/tmp", "/var", "/var", "/var", "/root", "/srv"]  # Replace with actual paths
 EXCLUDE_FILES = [".DS_Store", "Thumbs.db"]  # Add exclusions
 HASH_ALGORITHM = "sha256"  # Options: md5, sha1, sha256, sha512
 BASELINE_FILE = "fim_baseline.json"
