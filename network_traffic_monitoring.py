@@ -144,16 +144,45 @@ class NetworkModule:
             f"[INFO] Starting network traffic monitoring"
             f"{f' on {self.interface}' if self.interface else ''}..."
         )
-        try:
-            sniff(iface=self.interface, prn=self._handle_packet, store=False)
-        except PermissionError:
-            self.alerts.info(
-                "[ERROR] Permission denied opening a raw socket. Network "
-                "traffic monitoring needs to run as root (or with "
-                "CAP_NET_RAW/CAP_NET_ADMIN)."
-            )
-        except OSError as e:
-            self.alerts.info(f"[ERROR] Could not start packet capture: {e}")
+
+        # sniff() can fail right at startup if the interface exists but
+        # isn't fully up yet (e.g. wifi still associating -- DORMANT, not
+        # LOWER_UP -- at the exact moment this thread starts), or drop out
+        # later if the link bounces. Without a retry loop, one ENETDOWN
+        # permanently ends this thread with no further error and the
+        # module goes dark for the rest of the run. Retry with backoff
+        # instead, and surface (deduplicated, via AlertManager) that it's
+        # still down rather than failing silently.
+        backoff = 1
+        max_backoff = 30
+        while True:
+            try:
+                sniff(iface=self.interface, prn=self._handle_packet, store=False)
+                # sniff() only returns if the capture loop itself ends
+                # (e.g. socket closed underneath us) -- that's not an
+                # expected outcome for an unbounded capture, so treat it
+                # the same as a failure and retry.
+                self.alerts.raise_alert(
+                    "network_capture_stopped",
+                    "[WARN] Packet capture stopped unexpectedly; restarting...",
+                    notify=False,
+                )
+            except PermissionError:
+                self.alerts.info(
+                    "[ERROR] Permission denied opening a raw socket. Network "
+                    "traffic monitoring needs to run as root (or with "
+                    "CAP_NET_RAW/CAP_NET_ADMIN)."
+                )
+                return  # won't fix itself -- no point retrying
+            except OSError as e:
+                self.alerts.raise_alert(
+                    "network_capture_error",
+                    f"[ERROR] Packet capture failed ({e}); retrying in {backoff}s...",
+                    notify=False,
+                )
+
+            time.sleep(backoff)
+            backoff = min(backoff * 2, max_backoff)
 
     def run(self):
         """Run the Network Monitoring module."""
