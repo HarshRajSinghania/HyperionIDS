@@ -2,22 +2,24 @@ import os
 import time
 import re
 import threading
-from plyer import notification
+
+import config
+from common import AlertManager
 
 print(
     """
  __    __                                          __                      ______  _______    ______  
-|  \  |  \                                        |  \                    |      \|       \  /      \ 
-| $$  | $$ __    __   ______    ______    ______   \$$  ______   _______   \$$$$$$| $$$$$$$\|  $$$$$$\
-| $$__| $$|  \  |  \ /      \  /      \  /      \ |  \ /      \ |       \   | $$  | $$  | $$| $$___\$$
-| $$    $$| $$  | $$|  $$$$$$\|  $$$$$$\|  $$$$$$\| $$|  $$$$$$\| $$$$$$$\  | $$  | $$  | $$ \$$    \ 
-| $$$$$$$$| $$  | $$| $$  | $$| $$    $$| $$   \$$| $$| $$  | $$| $$  | $$  | $$  | $$  | $$ _\$$$$$$\
-| $$  | $$| $$__/ $$| $$__/ $$| $$$$$$$$| $$      | $$| $$__/ $$| $$  | $$ _| $$_ | $$__/ $$|  \__| $$
-| $$  | $$ \$$    $$| $$    $$ \$$     \| $$      | $$ \$$    $$| $$  | $$|   $$ \| $$    $$ \$$    $$
- \$$   \$$ _\$$$$$$$| $$$$$$$   \$$$$$$$ \$$       \$$  \$$$$$$  \$$   \$$ \$$$$$$ \$$$$$$$   \$$$$$$ 
-          |  \__| $$| $$                                                                              
-           \$$    $$| $$                                                                              
-            \$$$$$$  \$$                                                                              
+|  \\  |  \\                                        |  \\                    |      \\|       \\  /      \\ 
+| $$  | $$ __    __   ______    ______    ______   \\$$  ______   _______   \\$$$$$$| $$$$$$$\\|  $$$$$$\\
+| $$__| $$|  \\  |  \\ /      \\  /      \\  /      \\ |  \\ /      \\ |       \\   | $$  | $$  | $$| $$___\\$$
+| $$    $$| $$  | $$|  $$$$$$\\|  $$$$$$\\|  $$$$$$\\| $$|  $$$$$$\\| $$$$$$$\\  | $$  | $$  | $$ \\$$    \\ 
+| $$$$$$$$| $$  | $$| $$  | $$| $$    $$| $$   \\$$| $$| $$  | $$| $$  | $$  | $$  | $$  | $$ _\\$$$$$$\\
+| $$  | $$| $$__/ $$| $$__/ $$| $$$$$$$$| $$      | $$| $$__/ $$| $$  | $$ _| $$_ | $$__/ $$|  \\__| $$
+| $$  | $$ \\$$    $$| $$    $$ \\$$     \\| $$      | $$ \\$$    $$| $$  | $$|   $$ \\| $$    $$ \\$$    $$
+ \\$$   \\$$ _\\$$$$$$$| $$$$$$$   \\$$$$$$$ \\$$       \\$$  \\$$$$$$  \\$$   \\$$ \\$$$$$$ \\$$$$$$$   \\$$$$$$ 
+          |  \\__| $$| $$                                                                              
+           \\$$    $$| $$                                                                              
+            \\$$$$$$  \\$$                                                                              
 
 ===================================================> System Logs Analysis
 Made by: Harsh Raj Singhania 
@@ -25,39 +27,22 @@ Github: https://github.com/HarshRajSinghania
 """
 )
 
-# Configuration
-LOG_FILES = ["/var/log/syslog", "/var/log/auth.log"]  # Logs to monitor
-LOG_ALERTS_FILE = "syslog_alerts.log"
+# Pulls a source IP out of a matched line when present, so repeated hits
+# from *different* sources (e.g. two hosts both brute-forcing SSH) are
+# tracked -- and alerted on -- separately, while repeats from the *same*
+# source get deduplicated instead of spamming one notification per line.
+_IP_PATTERN = re.compile(r"\bfrom (\d{1,3}(?:\.\d{1,3}){3})\b")
 
-# Patterns for suspicious activity
-SUSPICIOUS_PATTERNS = {
-    "Failed SSH Login": r"Failed password for (invalid user )?\S+ from \S+ port \d+",
-    "Successful Root Login": r"session opened for user root",
-    "Privilege Escalation": r"(sudo:|su:|pam_unix\(sudo:session\)): session",
-    "User Added or Deleted": r"useradd|userdel",
-    "Service Restarted": r"systemd.*(restarting|failed|stopped)",
-    "Unauthorized File Access": r"avc:  denied"
-}
 
 class SyslogMonitor:
-    def __init__(self, log_files, log_alerts_file):
+    def __init__(self, log_files, log_alerts_file,
+                 patterns=None, alert_manager=None):
         self.log_files = log_files
-        self.log_alerts_file = log_alerts_file
+        self.patterns = patterns or config.SYSLOG_PATTERNS
 
-    def log_event(self, event):
-        """Log detected events to a file and send a system notification."""
-        with open(self.log_alerts_file, "a") as log:
-            log.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {event}\n")
-        print(event)
-        self.send_notification(event)
-
-    def send_notification(self, message):
-        """Display a system notification."""
-        notification.notify(
+        self.alerts = alert_manager or AlertManager(
+            log_file=log_alerts_file, app_name="Syslog Monitor",
             title="Syslog Monitoring Alert",
-            message=message,
-            app_name="Syslog Monitor",
-            timeout=5
         )
 
     def monitor_logs(self, log_file):
@@ -70,17 +55,27 @@ class SyslogMonitor:
                     if not line:
                         time.sleep(1)
                         continue
-                    
-                    for alert_name, pattern in SUSPICIOUS_PATTERNS.items():
+
+                    for alert_name, pattern in self.patterns.items():
                         if re.search(pattern, line):
-                            self.log_event(f"[ALERT] {alert_name}: {line.strip()}")
+                            ip_match = _IP_PATTERN.search(line)
+                            key_suffix = ip_match.group(1) if ip_match else log_file
+                            self.alerts.raise_alert(
+                                f"{alert_name}:{key_suffix}",
+                                f"[ALERT] {alert_name}: {line.strip()}",
+                            )
 
         except FileNotFoundError:
-            print(f"[ERROR] Log file not found: {log_file}")
+            self.alerts.info(f"[ERROR] Log file not found: {log_file}")
+        except PermissionError:
+            self.alerts.info(
+                f"[ERROR] Permission denied reading {log_file} "
+                f"(syslog monitoring typically needs to run as root)."
+            )
 
     def run(self):
         """Run the Syslog Monitoring module in separate threads."""
-        self.log_event("[INFO] Syslog Monitoring module is running...")
+        self.alerts.info("[INFO] Syslog Monitoring module is running...")
         for log_file in self.log_files:
             thread = threading.Thread(target=self.monitor_logs, args=(log_file,), daemon=True)
             thread.start()
@@ -88,7 +83,7 @@ class SyslogMonitor:
 
 # Main Execution
 if __name__ == "__main__":
-    syslog_monitor = SyslogMonitor(LOG_FILES, LOG_ALERTS_FILE)
+    syslog_monitor = SyslogMonitor(config.SYSLOG_FILES, config.SYSLOG_LOG_FILE)
     syslog_monitor.run()
 
     print("Syslog Monitoring is running. Press Ctrl+C to stop.")
