@@ -1,6 +1,7 @@
 import os
 import time
 import re
+import subprocess
 import threading
 
 import config
@@ -73,12 +74,60 @@ class SyslogMonitor:
                 f"(syslog monitoring typically needs to run as root)."
             )
 
+    def monitor_journal(self):
+        """Fallback for systems with no rsyslog (journald-only, e.g. recent
+        Debian/Kali default installs) where /var/log/syslog and
+        /var/log/auth.log simply don't exist. Tails the live journal
+        instead so the module isn't just silently doing nothing."""
+        try:
+            process = subprocess.Popen(
+                ["journalctl", "-f", "-n", "0", "-o", "short-iso"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+            )
+        except FileNotFoundError:
+            self.alerts.info(
+                "[ERROR] No configured log files exist and journalctl is not "
+                "available either -- syslog monitoring cannot run on this host."
+            )
+            return
+
+        self.alerts.info("[INFO] Tailing journald as a fallback log source.")
+        try:
+            for line in process.stdout:
+                if not line:
+                    continue
+                for alert_name, pattern in self.patterns.items():
+                    if re.search(pattern, line):
+                        ip_match = _IP_PATTERN.search(line)
+                        key_suffix = ip_match.group(1) if ip_match else "journald"
+                        self.alerts.raise_alert(
+                            f"{alert_name}:{key_suffix}",
+                            f"[ALERT] {alert_name}: {line.strip()}",
+                        )
+        finally:
+            process.terminate()
+
     def run(self):
         """Run the Syslog Monitoring module in separate threads."""
         self.alerts.info("[INFO] Syslog Monitoring module is running...")
+        missing_files = []
         for log_file in self.log_files:
-            thread = threading.Thread(target=self.monitor_logs, args=(log_file,), daemon=True)
-            thread.start()
+            if os.path.exists(log_file):
+                thread = threading.Thread(target=self.monitor_logs, args=(log_file,), daemon=True)
+                thread.start()
+            else:
+                missing_files.append(log_file)
+
+        if missing_files:
+            self.alerts.info(
+                f"[INFO] {', '.join(missing_files)} not found (no rsyslog on this "
+                f"host?) -- falling back to journald for system log monitoring."
+            )
+            journal_thread = threading.Thread(target=self.monitor_journal, daemon=True)
+            journal_thread.start()
 
 
 # Main Execution
