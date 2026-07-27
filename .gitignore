@@ -1,0 +1,14 @@
+# Generated at runtime -- not part of the source tree
+*.log
+fim_baseline.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editor/OS cruft
+.vscode/
+.idea/
+.DS_Store
