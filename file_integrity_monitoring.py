@@ -3,51 +3,77 @@ import hashlib
 import json
 import time
 import threading
-from plyer import notification
+
+import config
+from common import AlertManager, ensure_directory_for
 
 print(
 """
  __    __                                          __                      ______  _______    ______  
-|  \  |  \                                        |  \                    |      \|       \  /      \ 
-| $$  | $$ __    __   ______    ______    ______   \$$  ______   _______   \$$$$$$| $$$$$$$\|  $$$$$$\
-| $$__| $$|  \  |  \ /      \  /      \  /      \ |  \ /      \ |       \   | $$  | $$  | $$| $$___\$$
-| $$    $$| $$  | $$|  $$$$$$\|  $$$$$$\|  $$$$$$\| $$|  $$$$$$\| $$$$$$$\  | $$  | $$  | $$ \$$    \ 
-| $$$$$$$$| $$  | $$| $$  | $$| $$    $$| $$   \$$| $$| $$  | $$| $$  | $$  | $$  | $$  | $$ _\$$$$$$\
-| $$  | $$| $$__/ $$| $$__/ $$| $$$$$$$$| $$      | $$| $$__/ $$| $$  | $$ _| $$_ | $$__/ $$|  \__| $$
-| $$  | $$ \$$    $$| $$    $$ \$$     \| $$      | $$ \$$    $$| $$  | $$|   $$ \| $$    $$ \$$    $$
- \$$   \$$ _\$$$$$$$| $$$$$$$   \$$$$$$$ \$$       \$$  \$$$$$$  \$$   \$$ \$$$$$$ \$$$$$$$   \$$$$$$ 
-          |  \__| $$| $$                                                                              
-           \$$    $$| $$                                                                              
-            \$$$$$$  \$$                                                                              
+|  \\  |  \\                                        |  \\                    |      \\|       \\  /      \\ 
+| $$  | $$ __    __   ______    ______    ______   \\$$  ______   _______   \\$$$$$$| $$$$$$$\\|  $$$$$$\\
+| $$__| $$|  \\  |  \\ /      \\  /      \\  /      \\ |  \\ /      \\ |       \\   | $$  | $$  | $$| $$___\\$$
+| $$    $$| $$  | $$|  $$$$$$\\|  $$$$$$\\|  $$$$$$\\| $$|  $$$$$$\\| $$$$$$$\\  | $$  | $$  | $$ \\$$    \\ 
+| $$$$$$$$| $$  | $$| $$  | $$| $$    $$| $$   \\$$| $$| $$  | $$| $$  | $$  | $$  | $$  | $$ _\\$$$$$$\\
+| $$  | $$| $$__/ $$| $$__/ $$| $$$$$$$$| $$      | $$| $$__/ $$| $$  | $$ _| $$_ | $$__/ $$|  \\__| $$
+| $$  | $$ \\$$    $$| $$    $$ \\$$     \\| $$      | $$ \\$$    $$| $$  | $$|   $$ \\| $$    $$ \\$$    $$
+ \\$$   \\$$ _\\$$$$$$$| $$$$$$$   \\$$$$$$$ \\$$       \\$$  \\$$$$$$  \\$$   \\$$ \\$$$$$$ \\$$$$$$$   \\$$$$$$ 
+          |  \\__| $$| $$                                                                              
+           \\$$    $$| $$                                                                              
+            \\$$$$$$  \\$$                                                                              
 
-===================================================> File Intergrity Monitoring
+===================================================> File Integrity Monitoring
 Made by: Harsh Raj Singhania 
 Github: https://github.com/HarshRajSinghania
 """
 )
 
-# Configuration
-MONITORED_PATHS = ["/etc", "/bin", "/sbin", "/usr/bin", "/usr/sbin", "/boot", "/tmp", "/root", "/srv"]  # Replace with actual paths
-EXCLUDE_FILES = [".DS_Store", "Thumbs.db", "/root/.dbus/session-bus/7817bd73d9b94d65a33bb5a802eee272-0", "/etc/mtab"]  # Add exclusions
-HASH_ALGORITHM = "sha256"  # Options: md5, sha1, sha256, sha512
-BASELINE_FILE = "fim_baseline.json"
-LOG_FILE = "fim_notifications.log"
 
-# FIM Module
 class FIMModule:
-    def __init__(self, monitored_paths, baseline_file, log_file, exclude_files=None, hash_algorithm="sha256"):
+    def __init__(self, monitored_paths, baseline_file, log_file,
+                 exclude_files=None, hash_algorithm="sha256",
+                 scan_interval=config.FIM_SCAN_INTERVAL,
+                 alert_manager=None):
         self.monitored_paths = monitored_paths
         self.baseline_file = baseline_file
-        self.log_file = log_file
-        self.exclude_files = exclude_files or []
+        self.exclude_files = set(exclude_files or [])
         self.hash_algorithm = hash_algorithm
+        self.scan_interval = scan_interval
         self.baseline = {}
+
+        # HyperionIDS's own state/log files must never be treated as part
+        # of the monitored surface -- otherwise FIM alerts every time a
+        # sibling module (or itself) writes a log line, i.e. the modules
+        # "flag each other" bug.
+        self._own_paths = {
+            os.path.abspath(os.path.join(config.PROJECT_ROOT, name))
+            for name in config.HYPERION_DATA_FILES
+        }
+        self._own_paths.add(os.path.abspath(baseline_file))
+        self._own_paths.add(os.path.abspath(log_file))
+
+        self.alerts = alert_manager or AlertManager(
+            log_file=log_file, app_name="FIM System",
+            title="File Integrity Monitoring Alert",
+        )
+
+    def _is_excluded(self, full_path, filename):
+        """Filenames AND full paths are both honored (the original code
+        only ever compared bare filenames against a list that mixed in
+        full paths, so entries like '/etc/mtab' never actually matched)."""
+        if filename in self.exclude_files:
+            return True
+        if full_path in self.exclude_files:
+            return True
+        if os.path.abspath(full_path) in self._own_paths:
+            return True
+        return False
 
     def compute_hash(self, filepath):
         """Compute the hash of a file."""
         hash_func = getattr(hashlib, self.hash_algorithm)()
         with open(filepath, "rb") as f:
-            while chunk := f.read(4096):
+            while chunk := f.read(65536):
                 hash_func.update(chunk)
         return hash_func.hexdigest()
 
@@ -55,93 +81,94 @@ class FIMModule:
         """Generate a baseline of monitored files."""
         baseline = {}
         for path in self.monitored_paths:
+            if not os.path.exists(path):
+                continue
             for root, _, files in os.walk(path):
                 for file in files:
-                    if file in self.exclude_files:
-                        continue
                     full_path = os.path.join(root, file)
+                    if self._is_excluded(full_path, file):
+                        continue
                     try:
                         file_hash = self.compute_hash(full_path)
                         file_timestamp = os.path.getmtime(full_path)
                         baseline[full_path] = {
                             "hash": file_hash,
-                            "timestamp": file_timestamp
+                            "timestamp": file_timestamp,
                         }
-                    except Exception as e:
-                        self.log_event(f"[ERROR] Error processing {full_path}: {e}")
+                    except (PermissionError, FileNotFoundError, OSError):
+                        # Unreadable/vanished files are common (sockets,
+                        # permission-restricted files) and not an alert-
+                        # worthy event on their own.
+                        continue
+        ensure_directory_for(self.baseline_file)
         with open(self.baseline_file, "w") as f:
             json.dump(baseline, f, indent=4)
-        self.log_event("[INFO] Baseline generated successfully.")
+        self.alerts.info(f"[INFO] Baseline generated successfully ({len(baseline)} files tracked).")
         self.baseline = baseline
 
     def load_baseline(self):
         """Load the baseline file."""
         if not os.path.exists(self.baseline_file):
-            self.log_event("[INFO] Baseline file not found. Generating a new baseline.")
+            self.alerts.info("[INFO] Baseline file not found. Generating a new baseline.")
             self.generate_baseline()
         else:
             with open(self.baseline_file, "r") as f:
                 self.baseline = json.load(f)
-            self.log_event("[INFO] Baseline loaded successfully.")
-
-    def log_event(self, event):
-        """Log events to a file and display system notifications."""
-        with open(self.log_file, "a") as log:
-            log.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {event}\n")
-        print(event)
-        self.send_notification(event)
-
-    def send_notification(self, message):
-        """Display a system notification."""
-        notification.notify(
-            title="File Integrity Monitoring Alert",
-            message=message,
-            app_name="FIM System",
-            timeout=5
-        )
+            self.alerts.info("[INFO] Baseline loaded successfully.")
 
     def monitor_files(self):
         """Monitor files for changes."""
         if not self.baseline:
             self.load_baseline()
 
-        self.log_event("[INFO] Starting file monitoring...")
+        self.alerts.info("[INFO] Starting file monitoring...")
         while True:
-            for file, data in self.baseline.items():
+            for file, data in list(self.baseline.items()):
                 try:
+                    if self._is_excluded(file, os.path.basename(file)):
+                        continue
+
                     if not os.path.exists(file):
-                        self.log_event(f"[ALERT] File deleted: {file}")
+                        self.alerts.raise_alert(f"deleted:{file}", f"[ALERT] File deleted: {file}")
                         continue
 
                     current_hash = self.compute_hash(file)
                     current_timestamp = os.path.getmtime(file)
 
                     if current_hash != data["hash"]:
-                        self.log_event(f"[ALERT] File modified: {file}")
+                        self.alerts.raise_alert(f"modified:{file}", f"[ALERT] File modified: {file}")
+                        # Update baseline so a single change doesn't keep
+                        # re-alerting forever once the cooldown expires.
+                        data["hash"] = current_hash
+                        data["timestamp"] = current_timestamp
+                    elif current_timestamp != data["timestamp"]:
+                        self.alerts.raise_alert(
+                            f"touched:{file}",
+                            f"[INFO] File timestamp changed: {file}",
+                            notify=False,
+                        )
+                        data["timestamp"] = current_timestamp
 
-                    if current_timestamp != data["timestamp"]:
-                        self.log_event(f"[INFO] File timestamp changed: {file}")
+                except (PermissionError, FileNotFoundError, OSError) as e:
+                    self.alerts.raise_alert(f"error:{file}", f"[ERROR] Error processing {file}: {e}", notify=False)
 
-                except Exception as e:
-                    self.log_event(f"[ERROR] Error processing {file}: {e}")
-
-            time.sleep(10)  # Adjust monitoring interval
+            time.sleep(self.scan_interval)
 
     def run(self):
         """Run the FIM module."""
         monitor_thread = threading.Thread(target=self.monitor_files, daemon=True)
         monitor_thread.start()
-        self.log_event("[INFO] FIM module is running in the background.")
+        self.alerts.info("[INFO] FIM module is running in the background.")
 
 
 # Main Execution
 if __name__ == "__main__":
     fim = FIMModule(
-        monitored_paths=MONITORED_PATHS,
-        baseline_file=BASELINE_FILE,
-        log_file=LOG_FILE,
-        exclude_files=EXCLUDE_FILES,
-        hash_algorithm=HASH_ALGORITHM
+        monitored_paths=config.FIM_MONITORED_PATHS,
+        baseline_file=config.FIM_BASELINE_FILE,
+        log_file=config.FIM_LOG_FILE,
+        exclude_files=config.FIM_EXCLUDE_FILES,
+        hash_algorithm=config.FIM_HASH_ALGORITHM,
     )
     fim.run()
 
@@ -151,4 +178,3 @@ if __name__ == "__main__":
             time.sleep(1)
     except KeyboardInterrupt:
         print("\n[INFO] Monitoring stopped.")
-
